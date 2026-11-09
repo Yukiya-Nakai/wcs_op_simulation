@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>学生団体運営シミュレーション</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Helvetica Neue', Arial, 'Hiragino Kaku Gothic ProN', 'Hiragino Sans', Meiryo, sans-serif; }
+        .fade-in { animation: fadeIn 0.3s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+    <div class="max-w-4xl mx-auto p-4 flex flex-col h-screen">
+        <!-- ヘッダー (ステータス) -->
+        <header class="bg-blue-600 text-white p-4 rounded-t-lg shadow-md flex justify-between items-center">
+            <div>
+                <h1 class="text-xl font-bold">学生団体運営シミュレーション</h1>
+                <p id="turn-display" class="text-sm">ターン: 1 / 16 (2月前半)</p>
+            </div>
+            <div class="text-right">
+                <p class="text-lg font-bold">残りリソース: <span id="resource-display" class="text-2xl text-yellow-300">8</span></p>
+                <p class="text-xs">※使用可能リソースを超過する選択はできません</p>
+            </div>
+        </header>
+
+        <!-- メイン画面 -->
+        <main class="flex-grow: 1 bg-white p-4 shadow-md rounded-b-lg overflow-y-auto">
+            
+            <div id="game-over-screen" class="hidden text-center py-10">
+                <h2 class="text-3xl font-bold mb-4">シミュレーション終了！</h2>
+                <p class="text-lg mb-2">16ターンの運営お疲れ様でした．</p>
+                <p class="text-xl font-bold text-blue-600">最終獲得ポイント（隠しスコア）: <span id="final-score"></span> pt</p>
+                <button onclick="location.reload()" class="mt-8 bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-6 rounded">最初からプレイする</button>
+            </div>
+
+            <div id="game-board" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                
+                <!-- 活動カラム -->
+                <div class="border-2 border-blue-200 rounded-lg p-3 bg-blue-50 fade-in">
+                    <h2 class="text-lg font-bold border-b-2 border-blue-300 pb-1 mb-3 text-blue-800">活動篇</h2>
+                    <div id="activity-desc" class="text-sm mb-4 min-height-[40px]">状況テキスト</div>
+                    <div id="activity-options" class="flex flex-col gap-2"></div>
+                </div>
+
+                <!-- イベントカラム -->
+                <div class="border-2 border-green-200 rounded-lg p-3 bg-green-50 fade-in">
+                    <h2 class="text-lg font-bold border-b-2 border-green-300 pb-1 mb-3 text-green-800">イベント篇</h2>
+                    <div id="event-desc" class="text-sm mb-4 min-height-[40px]">状況テキスト</div>
+                    <div id="event-options" class="flex flex-col gap-2"></div>
+                </div>
+
+                <!-- その他カラム -->
+                <div class="border-2 border-purple-200 rounded-lg p-3 bg-purple-50 fade-in">
+                    <h2 class="text-lg font-bold border-b-2 border-purple-300 pb-1 mb-3 text-purple-800">その他篇</h2>
+                    <div id="other-desc" class="text-sm mb-4 min-height-[40px]">状況テキスト</div>
+                    <div id="other-options" class="flex flex-col gap-2"></div>
+                </div>
+
+            </div>
+
+            <!-- ターン実行ボタン -->
+            <div id="action-area" class="mt-6 text-center border-t pt-4">
+                <p id="selection-status" class="mb-2 text-sm font-bold text-red-500">各項目から1つずつ行動を選択してください．</p>
+                <p class="mb-2 text-sm">消費リソース合計: <span id="total-cost-display" class="font-bold">0</span></p>
+                <button id="commit-btn" disabled class="bg-gray-400 text-white font-bold py-3 px-8 rounded-full shadow-lg transition-colors">ターンを完了する</button>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // --- データ定義 ---
+        const MONTHS = ["2月①","2月②","3月①","3月②","4月①","4月②","5月①","5月②","6月①","6月②","7月①","7月②","8月①","8月②","9月①","9月②"];
+        
+        // 状態管理
+        let state = {
+            turn: 1, // 1〜16
+            score: 0,
+            actRoute: 'start',
+            evtRouteA: false,
+            evtRouteB: false,
+            evtRouteC: false,
+            othRouteA: false,
+            othRouteB: false,
+            kanbuEventStep: 0,
+            humanRelStep: 0,
+        };
+
+        // ランダムイベントデッキ
+        let randomDeck = [
+            ...Array(7).fill({ text: "特に何も起こらない", options: [{ text: "続行", cost: 0, pt: 0 }] }),
+            ...Array(3).fill({
+                text: "協賛金の連絡をうける",
+                options: [
+                    { text: "会議で話をつめる", cost: 4, pt: 10 },
+                    { text: "メールで話をつめる", cost: 2, pt: 10 },
+                    { text: "今回は余裕がないのでスルー", cost: 0, pt: 0 }
+                ]
+            }),
+            { kanbu: true }, // 幹部イベントトリガー
+            { humanRel: true } // ★人間関係イベントトリガーを追加
+        ];
+        // ランダムデッキのシャッフル
+        randomDeck.sort(() => Math.random() - 0.5);
+
+        let currentSelection = { activity: null, event: null, other: null };
+
+        // --- シナリオデータ生成 ---
+        function getActivityData(turn) {
+            if(turn === 1) return {
+                desc: "【前期の準備】",
+                opts: [
+                    { text: "理念や目標を達成するため，協働経験はないがやりたいことに合致している大企業S社にメールで協働をもちかける", cost: 2, pt: 0, next: 'A' },
+                    { text: "少なくとも1つくらいは協働を実現したいので，過去に協働経験のあるN社やI社に相談する", cost: 2, pt: 0, next: 'B' },
+                    { text: "内部完結する活動のみで構成．企業連絡なし", cost: 0, pt: 0, next: 'C' }
+                ]
+            };
+            if(turn >= 2 && turn <= 4) {
+                if (state.actRoute === 'A') {
+                    if (turn === 4) return { desc: "S社からの返信はない．", opts: [
+                        { text: "同じく協働経験はないが理念と合致するG社・T社にもメールを送る", cost: 2, pt: 0, next: 'D' },
+                        { text: "やはり最低1企業とは協働したい．N社・I社に相談する", cost: 2, pt: 0, next: 'B' },
+                        { text: "さすがに諦める", cost: 0, pt: 0, next: 'C' }
+                    ]};
+                    return { desc: "S社からの返信はない．", opts: [
+                        { text: "同じく協働経験はないが理念と合致するG社・T社にもメールを送る", cost: 2, pt: 0, next: 'D' },
+                        { text: "やはり最低1企業とは協働したい．N社・I社に相談する", cost: 2, pt: 0, next: 'B' },
+                        { text: "返信を待つ", cost: 0, pt: 0, next: 'A' }
+                    ]};
+                }
+                if (state.actRoute === 'C') return { desc: "開発局に前期すべて分の活動内容案の作成を指示．", opts: [
+                    { text: "目標と活動の乖離を防ぐため，開発定例に顔を出す", cost: 2, pt: turn===2 ? 4 : 5, next: 'F' },
+                    { text: "開発局に任せる", cost: 0, pt: 0, next: 'C' }
+                ]};
+            }
+            if(turn === 5 && state.actRoute === 'C') return { desc: "開発局に任せていたが，さすがに進みが悪い．", opts: [
+                { text: "定例に顔を出して進捗を確認 (強制進行)", cost: 2, pt: 0, next: 'F' }
+            ]};
+            if(turn >= 2 && turn <= 7) {
+                if (state.actRoute === 'B') return { desc: "N社・I社とも前向きな連絡．", opts: [
+                    { text: "両社ともコラボに向けて話を進める", cost: 6, pt: 30, next: 'E' },
+                    { text: "N社のみと協働し，I社には秋期を相談", cost: 3, pt: 10, next: 'E' },
+                    { text: "I社のみと協働し，N社には秋期を相談", cost: 3, pt: 10, next: 'E' }
+                ]};
+                if (state.actRoute === 'D') return { desc: "S社，G社から前向きな返信あり．話を進めることに．", opts: [
+                    { text: "他の企業への連絡はせず，残りは内部完結", cost: 0, pt: 50, next: 'main1' },
+                    { text: "過去に経験のあるN社やI社にも相談する", cost: 2, pt: 0, next: 'main2' }
+                ]};
+                if (state.actRoute === 'E') return { desc: "企画案を決めよう．", opts: [
+                    { text: "先方のアセットをマイナーチェンジ", cost: 0, pt: 10, next: 'main3' },
+                    { text: "開発局に依頼", cost: 0, pt: 10, next: 'main3' },
+                    { text: "自分たちで考える", cost: 3, pt: 10, next: 'main3' }
+                ]};
+                if (state.actRoute === 'F') return { desc: "活動カレンダー完成！", opts: [{ text: "続行", cost: 0, pt: 0, next: 'main4' }]};
+                
+                let m = state.actRoute;
+                if(m === 'main1') return { desc: "残りの活動を開発局に依頼/企画案を詰める", opts: [
+                    { text: "目標との乖離を防ぐため，定例に顔を出す", cost: 2, pt: 5, next: m },
+                    { text: "開発局に任せる", cost: 0, pt: 0, next: 'main1.1' }
+                ]};
+                if(m === 'main2') return { desc: "企業とコラボに向けた準備", opts: [
+                    { text: "両社ともコラボに向けて話を進める", cost: 6, pt: 30, next: 'main2.1' },
+                    { text: "N社のみと協働し，I社には秋期を相談", cost: 3, pt: 10, next: 'main2.1' },
+                    { text: "I社のみと協働し，N社には秋期を相談", cost: 3, pt: 10, next: 'main2.1' }
+                ]};
+                if(m === 'main3') return { desc: "残りの活動を開発局に依頼/企画案を詰める", opts: [
+                    { text: "目標との乖離を防ぐため，定例に顔を出す", cost: 2, pt: 5, next: 'main3.1' },
+                    { text: "開発局に任せる", cost: 0, pt: 0, next: 'main3.1' }
+                ]};
+                if(m === 'main1.1') return { desc: "企画案を決めよう．", opts: [
+                    { text: "先方のアセットをマイナーチェンジ", cost: 0, pt: 10, next: 'main1.2' },
+                    { text: "開発局に依頼", cost: 0, pt: 10, next: 'main1.2' },
+                    { text: "自分たちで考える", cost: 3, pt: 10, next: 'main1.2' }
+                ]};
+                if(m === 'main2.1') return { desc: "企画案を決めよう．", opts: [
+                    { text: "先方のアセットをマイナーチェンジ", cost: 0, pt: 10, next: 'main2.2' },
+                    { text: "開発局に依頼", cost: 0, pt: 10, next: 'main2.2' },
+                    { text: "自分たちで考える", cost: 3, pt: 10, next: 'main2.2' }
+                ]};
+                else{
+                    return { desc: "開発局の進捗を確認", opts: [
+                    { text: "進捗を確認", cost: 1, pt: 0, next: m },
+                    { text: "続行", cost: 0, pt: 0, next: m }
+                    ]}
+                }
+            }
+
+            
+
+            if(turn === 8){
+                if(state.actRoute === 'main1.1' || state.actRoute === 'main1.2'){state.actRoute = 'main1'}
+                if(state.actRoute === 'main2.1' || state.actRoute === 'main2.2'){state.actRoute = 'main2'}
+                if(state.actRoute === 'main3.1'){state.actRoute = 'main3'}
+                return { desc: "開発局の活動準備が間に合っていない！！！", opts: [
+                    { text: "徹夜してでも終わらせるよう指示", cost: 0, pt: -20, next: state.actRoute },
+                    { text: "急遽レクに切りかえ，なんとかする", cost: 3, pt: -5, next: state.actRoute },
+                    { text: "担当者とオンライン上でやり取りしながら手伝い，間に合わせる", cost: 6, pt: 0, next: state.actRoute }
+            ]}};
+            if(turn === 9){
+                if(state.actRoute === 'main1') return { desc: "経験の浅い渉外局員がS社との会議で不手際．先方が大激怒！", opts: [
+                    { text: "メールで謝罪の連絡", cost: 2, pt: -20, next: state.actRoute },
+                    { text: "メールでアポをとり，直接謝罪に行く", cost: 8, pt: 20, next: state.actRoute },
+                    { text: "次回の会議で謝罪するので一旦おいておく", cost: 0, pt: -50, next: '-X' }
+                ]};
+                if(state.actRoute === 'main2' || state.actRoute === 'main3') return { desc: "企業コラボの第1回が無事成功に終わる．先週の準備不足も帳消しになる盛り上がり．", opts: [
+                    { text: "続行", cost: 0, pt: 20, next: state.actRoute }
+                ]}
+                if(state.actRoute === 'main4') return { desc: "準備不足が響いて評判が落ちる．", opts: [
+                    { text: "活動の様子を発信", cost: 2, pt: 5, next: state.actRoute },
+                    { text: "次回の広報を強化し，興味をひく", cost: 3, pt: 5, next: state.actRoute },
+                    { text: "一旦スルー", cost: 0, pt: -5, next: state.actRoute }
+                ]};
+            };
+            if(turn === 10) {
+                if(state.actRoute === 'main1' || state.actRoute === 'main2' || state.actRoute === '-X') return { desc: "G社で問題発生！社員からの指摘を無視し，サイバー攻撃を受ける．謝罪会見で社長が大炎上！", opts: [
+                    { text: "協働のとりやめ・延期を伝え，代替活動を準備", cost: 5, pt: 20, next: state.actRoute },
+                    { text: "知名度は高いのでかえって興味をひくと考え，そのまま進める", cost: 0, pt: -10, next: state.actRoute }
+                ]};
+                if(state.actRoute === 'main3' || state.actRoute === 'main4') return { desc: "順調に活動が進んでいる", opts: [
+                    {text: "続行", cost: 0, pt: 10, next: state.actRoute}
+                ]}
+            }
+            if(turn === 11) {
+                if(state.actRoute === '-X') return { desc: "謝罪がないことでS社はさらに激怒．次回会議の開催もなくなり，コラボ中止に．代替活動の用意．", opts: [{ text: "続行", cost: 4, pt: -60, next: 'end' }]};
+                return { desc: "企業コラボが成功におわるなど，なんとか前期を走りきった．", opts: [{ text: "続行", cost: 0, pt: 40, next: 'end' }]};
+            }
+            return { desc: "活動は一段落している．", opts: [{ text: "続行", cost: 0, pt: 0, next: 'end' }] };
+        }
+
+        function getEventData(turn) {
+            const evts = {
+                1: { desc: "冬合宿と新歓の準備", opts: [{ text: "冬合宿の準備をサポートする", cost: 3, pt: 20 }, { text: "ビラの協賛を企業に相談", cost: 3, pt: 20 },
+                    { text: "両方する", cost: 6, pt: 40 }, { text: "一旦見送る", cost: 0, pt: 0 }] },
+                2: { desc: "新歓ビラ", opts: [{ text: "協賛のよびかけ", cost: 2, pt: 10 }, { text: "コラボをM社によびかける", cost: 2, pt: 20 },
+                    { text: "両方する", cost: 4, pt: 30 }, { text: "一旦見送る", cost: 0, pt: 0 }
+                ] },
+                3: { desc: "新歓準備", opts: [
+                    { text: "内容を詰める", cost: 2, pt: 10 }, 
+                    { text: "新歓の内容を詰め，シフトを作成する", cost: 5, pt: 20 },
+                    { text: "一旦見送る", cost: 0, pt: 0 }
+                ]},
+                4: { desc: "新歓準備2", opts: [
+                    { text: "シフトを詰める", cost: 2, pt: 20 },
+                    { text: "何とかなるので放置する", cost: 0, pt: -10 }
+                ]},
+                5: { desc: "新歓ビラが足りない！！", opts: [
+                    { text: "ビラ追加発注", cost: 3, pt: 20 }, { text: "ある分を配る", cost: 0, pt: 0 }
+                ]},
+                6: { desc: "新歓シフトに入っていた人が来ない！", opts: [
+                    { text: "少し遅れて来てくれるはず！", cost: 0, pt: -10 }, { text: "連絡をとる", cost: 1, pt: 0 }, { text: "代わりに行く", cost: 4, pt: 10 }
+                ]},
+                7: { desc: "局内のイベント", opts: [
+                    { text: "局新歓を行う", cost: 6, pt: 30 }, { text: "局説明会を行う", cost: 2, pt: 10 }, { text: "特に何もしない", cost: 0, pt: -30 }
+                ]},
+                8: { desc: "BBQ準備", opts: [{ text: "間に合わないので手伝う", cost: 4, pt: 15 }, { text: "なんとかなるので放置", cost: 0, pt: -5 }]},
+                9: { desc: "新入会員向け", opts: [
+                    { text: "大規模なイベントを開催！", cost: 6, pt: 40 }, { text: "小規模のイベントを開催", cost: 2, pt: 10 }, { text: "特に何もしない", cost: 0, pt: 0 }
+                ]},
+                10: { desc: "合宿準備", opts: [
+                    { text: "夏合宿の準備を進める", cost: 4, pt: 10 }, { text: "小規模イベントで定着率UP", cost: 2, pt: 10 },
+                    { text: "どっちもやる", cost: 6, pt: 20 }, { text: "特に何もしない", cost: 0, pt: 0 }
+                ]},
+                11: { desc: "夏合宿に向けて", opts: [{ text: "夏合宿の準備にとりかかる", cost: 4, pt: 10 }, { text: "特に何もしない", cost: 0, pt: 0 }]},
+                12: { desc: "合宿直前", opts: [{ text: "夏合宿の準備を進める", cost: 4, pt: 10 }, { text: "特に何もしない", cost: 0, pt: 0 }]},
+                13: { desc: "【大問題】夏合宿の宿が先方の不手際でダブルブッキング発覚！先方は2週間後までに宿を探すと言っているが...", opts: [
+                    { text: "先方の問題なので対応を任せる", cost: 0, pt: 0, eff: 'routeA' },
+                    { text: "自分たちでも代替を立てる", cost: 8, pt: 0, eff: 'routeB' }
+                ]},
+                14: { desc: "ダブルブッキングその後...", opts: [] },
+                15: { desc: "夏合宿当日！", opts: [] },
+                16: { desc: "秋新歓準備", opts: [
+                    { text: "注力してコンテンツを構成", cost: 6, pt: 10 }, { text: "例年通りの準備で臨む", cost: 2, pt: 5 }, { text: "特に何もしない", cost: 0, pt: 0 }
+                ]}
+            };
+            let data = evts[turn];
+            if(turn === 14) {
+                if(state.evtRouteA) {
+                    data.desc = "今のところ宿は見つかっていない．";
+                    data.opts = [
+                        { text: "先方の不手際なので，なんとかすべき", cost: 0, pt: -30, eff: 'routeA' },
+                        { text: "さすがに待てないので自分たちで探す", cost: 8, pt: 0, eff: 'routeB' }
+                    ];
+                } else {
+                    data.desc = "なんとか代わりの宿をみつける．しかし宿代が数倍に...";
+                    data.opts = [
+                        { text: "参加費に転嫁する", cost: 0, pt: 0, eff: 'routeC' }, { text: "団体予算から拠出する", cost: 8, pt: 10, eff: 'routeC' }
+                    ];
+                }
+            }
+            if(turn === 15) {
+                if(state.evtRouteC) {
+                    data.desc = "合宿本番．宿代の件は...";
+                    data.opts = [
+                        { text: "先方が持ってくれることに！無事解決", cost: 0, pt: 30 }
+                    ];
+                } 
+                else if(state.evtRouteB) {
+                    data.desc = "なんとか代わりの宿をみつける．しかし宿代が数倍に...";
+                    data.opts = [
+                        { text: "参加費に転嫁する", cost: 0, pt: 0}, { text: "団体予算から拠出する", cost: 8, pt: 10}
+                    ];
+                }
+                else {
+                    data.desc = "結局宿は見つからないまま当日を迎えてしまう...";
+                    data.opts = [{ text: "合宿中止の大惨事", cost: 8, pt: -100 }];
+                }
+            }
+            return data;
+        }
+
+        function getOtherData(turn) {
+            // 固定イベント（ターン8のみ残す）
+            if(turn === 8) return { desc: "経営者交流会が迫ってきた！", opts: [
+                { text: "地道に声をかけ参加をつのる", cost: 5, pt: 30 }, { text: "広報を行い参加を募る", cost: 2, pt: -5 }, { text: "何もしない", cost: 0, pt: -20 }
+            ]};
+
+            // 人間関係トラブルの連続処理（ステップ2）
+            if(state.humanRelStep === 1) {
+                state.humanRelStep = 2; // 次のターンへ
+                if(state.othRouteB) return { desc: "スルーした結果，女子生徒とその友達は退会してしまった．", opts: [{ text: "続行", cost: 0, pt: -30,  eff: 'othRouteD' }]};
+                return { desc: "女子生徒とその友達から詳しく話を聞いた．", opts: [
+                    { text: "Aの主張に基づき男子Bを処分", cost: 2, pt: -20, eff: 'othRouteA' }, 
+                    { text: "男子生徒とその友達にも聞きとりを行う", cost: 4, pt: 10, eff: 'othRouteB' }, 
+                    { text: "取るに足らない話なので何もしない", cost: 0, pt: -50, eff: 'othRouteC' }
+                ]};
+            }
+            // 人間関係トラブルの連続処理（ステップ3・結末）
+            if(state.humanRelStep === 2) {
+                state.humanRelStep = 0; // 終了
+                if(state.othRouteD) return { desc: "特に何も起こらなかった．", opts: [{ text: "続行", cost: 0, pt: -30 }]};
+                if(state.othRouteC) return { desc: "女子生徒とその友達は退会してしまった．", opts: [{ text: "続行", cost: 0, pt: -30 }]};
+                if(state.othRouteB) return { desc: "聞き取りの結果，双方に問題があったことがわかり，当人同士で解決した．", opts: [{ text: "続行", cost: 0, pt: 10 }]};
+                if(state.othRouteA) return { desc: "男子生徒とその友達は退会してしまった．", opts: [{ text: "続行", cost: 0, pt: -30 }]};
+            }
+
+            // 幹部トラブルの連続処理（ステップ2）
+            if(state.kanbuEventStep === 1) {
+                state.kanbuEventStep = 0; // 終了
+                return { desc: "【連続】幹部Aに改善はみられなかった．手を尽くしてもどうにもならないこともある．", opts: [{ text: "続行", cost: 0, pt: 0 }]};
+            }
+
+            // ランダムデッキから引く処理
+            if(randomDeck.length > 0) {
+                let ev = randomDeck.pop();
+                
+                // 人間関係トラブルを引き当てた場合（ステップ1）
+                if(ev.humanRel) {
+                    state.humanRelStep = 1;
+                    return { desc: "女子生徒Aから「男子生徒Bから気持ち悪い連絡を受けて困っている」と相談が．", opts: [
+                        { text: "女子生徒Aとその友達に詳しく話を聞く", cost: 4, pt: 10, eff: 'routeA' }, 
+                        { text: "忙しいので一旦スルー", cost: 0, pt: -50, eff: 'routeB' }
+                    ]};
+                }
+                
+                // 幹部トラブルを引き当てた場合（ステップ1）
+                if(ev.kanbu) {
+                    state.kanbuEventStep = 1;
+                    return { desc: "幹部Aのタスクの進捗が悪い", opts: [
+                        { text: "何ができていて何ができていないか確認し，原因を調べる", cost: 6, pt: -10 }, 
+                        { text: "相談に乗り，できないことは巻きとる", cost: 4, pt: -10 }, 
+                        { text: "どうにかなるので放置", cost: 0, pt: -20 }
+                    ]};
+                }
+                
+                // 通常のランダムイベント
+                return { desc: ev.text, opts: ev.options };
+            }
+            
+            return { desc: "特に何も起こらない", opts: [{ text: "続行", cost: 0, pt: 0 }] };
+        }
+
+        // --- UIレンダリング ---
+        function renderTurn() {
+            let maxRes = (state.turn === 11 || state.turn === 12) ? 4 : 8;
+            document.getElementById('turn-display').innerText = `ターン: ${state.turn} / 16 (${MONTHS[state.turn-1]})`;
+            document.getElementById('resource-display').innerText = maxRes;
+            
+            currentSelection = { activity: null, event: null, other: null };
+            updateSelectionStatus();
+
+            renderOptions('activity', getActivityData(state.turn));
+            renderOptions('event', getEventData(state.turn));
+            renderOptions('other', getOtherData(state.turn));
+        }
+
+        function renderOptions(category, data) {
+            document.getElementById(`${category}-desc`).innerText = data.desc;
+            let container = document.getElementById(`${category}-options`);
+            container.innerHTML = '';
+            
+            // 選択肢の配列をコピーしてランダムにシャッフルする
+            let shuffledOpts = [...data.opts].sort(() => Math.random() - 0.5);
+            
+            shuffledOpts.forEach((opt) => {
+                let btn = document.createElement('button');
+                btn.className = `option-btn w-full text-left p-2 rounded border border-gray-300 hover:bg-gray-100 transition-colors text-sm bg-white`;
+                btn.innerHTML = `<span class="font-bold">${opt.text}</span> <span class="text-xs text-gray-500 float-right">コスト: ${opt.cost}</span>`;
+                btn.onclick = () => selectOption(category, opt, btn);
+                container.appendChild(btn);
+            });
+        }
+
+        function selectOption(category, opt, btnElement) {
+            currentSelection[category] = opt;
+            let btns = document.getElementById(`${category}-options`).children;
+            for(let b of btns) b.className = `option-btn w-full text-left p-2 rounded border border-gray-300 hover:bg-gray-100 transition-colors text-sm bg-white`;
+            
+            let color = category === 'activity' ? 'blue' : (category === 'event' ? 'green' : 'purple');
+            btnElement.classList.remove('bg-white', 'border-gray-300');
+            btnElement.classList.add(`bg-${color}-200`, `border-${color}-500`);
+            updateSelectionStatus();
+        }
+
+        function updateSelectionStatus() {
+            let totalCost = (currentSelection.activity?.cost || 0) + (currentSelection.event?.cost || 0) + (currentSelection.other?.cost || 0);
+            let selectedCount = (currentSelection.activity ? 1 : 0) + (currentSelection.event ? 1 : 0) + (currentSelection.other ? 1 : 0);
+            document.getElementById('total-cost-display').innerText = totalCost;
+            
+            let maxRes = (state.turn === 11 || state.turn === 12) ? 4 : 8;
+            let btn = document.getElementById('commit-btn');
+            let status = document.getElementById('selection-status');
+
+            if(selectedCount < 3) {
+                status.innerText = "各項目から1つずつ行動を選択してください．";
+                status.className = "mb-2 text-sm font-bold text-red-500";
+                btn.disabled = true;
+                btn.className = "bg-gray-400 text-white font-bold py-3 px-8 rounded-full shadow-lg";
+            } else if (totalCost > maxRes) {
+                status.innerText = `コストオーバーです！（上限${maxRes}）選択を見直してください．`;
+                status.className = "mb-2 text-sm font-bold text-red-500";
+                btn.disabled = true;
+                btn.className = "bg-gray-400 text-white font-bold py-3 px-8 rounded-full shadow-lg";
+            } else {
+                status.innerText = "選択完了．ターンを実行できます．";
+                status.className = "mb-2 text-sm font-bold text-blue-600";
+                btn.disabled = false;
+                btn.className = "bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transform hover:scale-105 transition-all cursor-pointer";
+            }
+        }
+
+        document.getElementById('commit-btn').onclick = () => {
+            state.score += (currentSelection.activity.pt || 0) + (currentSelection.event.pt || 0) + (currentSelection.other.pt || 0);
+            if(currentSelection.activity.next) state.actRoute = currentSelection.activity.next;
+            
+            let evEff = currentSelection.event.eff;
+            if(evEff === 'routeA') { state.evtRouteA = true; state.evtRouteB = false; state.evtRouteC = false; }
+            if(evEff === 'routeB') { state.evtRouteA = false; state.evtRouteB = true; state.evtRouteC = false; }
+            if(evEff === 'routeC') { state.evtRouteA = false; state.evtRouteB = false; state.evtRouteC = true; }
+            
+            let otEff = currentSelection.other.eff;
+            if(otEff === 'routeA') { state.othRouteA = true; state.othRouteB = false; }
+            if(otEff === 'routeB') { state.othRouteB = true; state.othRouteA = false; }
+
+            state.turn++;
+            if(state.turn > 16) {
+                document.getElementById('game-board').style.display = 'none';
+                document.getElementById('action-area').style.display = 'none';
+                document.getElementById('game-over-screen').classList.remove('hidden');
+                document.getElementById('final-score').innerText = state.score;
+            } else {
+                renderTurn();
+            }
+        };
+
+        renderTurn(); // 初期化
+    </script>
+</body>
+</html>
